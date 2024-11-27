@@ -13,7 +13,7 @@ mod consts {
     pub const ALT_BN128_ADDITION_INPUT_LEN: usize = 128;
 
     /// Input length for the multiplication operation.
-    pub const ALT_BN128_MULTIPLICATION_INPUT_LEN: usize = 128;
+    pub const ALT_BN128_MULTIPLICATION_INPUT_LEN: usize = 96;
 
     /// Pair element length.
     pub const ALT_BN128_PAIRING_ELEMENT_LEN: usize = 192;
@@ -26,13 +26,15 @@ mod consts {
 
     /// Output length for pairing operation.
     pub const ALT_BN128_PAIRING_OUTPUT_LEN: usize = 32;
+    pub const ALT_BN128_PAIRING_LE_OUTPUT_LEN: usize = 1;
 
     /// Size of the EC point field, in bytes.
     pub const ALT_BN128_FIELD_SIZE: usize = 32;
 
     /// Size of the EC point. `alt_bn128` point contains
     /// the consistently united x and y fields as 64 bytes.
-    pub const ALT_BN128_POINT_SIZE: usize = 64;
+    pub const ALT_BN128_G1_POINT_SIZE: usize = 64;
+    pub const ALT_BN128_G2_POINT_SIZE: usize = 128;
 
     pub const ALT_BN128_ADD: u64 = 0;
     pub const ALT_BN128_SUB: u64 = 1;
@@ -195,6 +197,52 @@ mod target_arch {
         Ok(convert_endianness_64(&result_point_data[..]).to_vec())
     }
 
+    fn g1_from_bytes(input: &[u8]) -> Result<G1, AltBn128Error> {
+        if input == [0u8; ALT_BN128_G1_POINT_SIZE] {
+            Ok(G1::zero())
+        } else {
+            G1::deserialize_with_mode(input, Compress::No, Validate::Yes)
+                .map_err(|_| AltBn128Error::InvalidInputData)
+        }
+    }
+
+    fn g2_from_bytes(input: &[u8]) -> Result<G2, AltBn128Error> {
+        if input == [0u8; ALT_BN128_G2_POINT_SIZE] {
+            Ok(G2::zero())
+        } else {
+            G2::deserialize_with_mode(input, Compress::No, Validate::Yes)
+                .map_err(|_| AltBn128Error::InvalidInputData)
+        }
+    }
+
+    pub fn alt_bn128_addition_le(input: &[u8]) -> Result<Vec<u8>, AltBn128Error> {
+        if input.len() > ALT_BN128_ADDITION_INPUT_LEN {
+            return Err(AltBn128Error::InvalidInputData);
+        }
+
+        let mut input = input.to_vec();
+        input.resize(ALT_BN128_ADDITION_INPUT_LEN, 0);
+
+        let p = g1_from_bytes(&input[..64])?;
+        let q = g1_from_bytes(&input[64..ALT_BN128_ADDITION_INPUT_LEN])?;
+
+        #[allow(clippy::arithmetic_side_effects)]
+        let result_point = p + q;
+
+        let mut result_point_data = vec![0u8; ALT_BN128_ADDITION_OUTPUT_LEN];
+        let result_point_affine: G1 = result_point.into();
+        result_point_affine
+            .x
+            .serialize_with_mode(&mut result_point_data[..32], Compress::No)
+            .map_err(|_| AltBn128Error::InvalidInputData)?;
+        result_point_affine
+            .y
+            .serialize_with_mode(&mut result_point_data[32..], Compress::No)
+            .map_err(|_| AltBn128Error::InvalidInputData)?;
+
+        Ok(result_point_data)
+    }
+
     pub fn alt_bn128_multiplication(input: &[u8]) -> Result<Vec<u8>, AltBn128Error> {
         if input.len() > ALT_BN128_MULTIPLICATION_INPUT_LEN {
             return Err(AltBn128Error::InvalidInputData);
@@ -233,6 +281,34 @@ mod target_arch {
         )
     }
 
+    pub fn alt_bn128_multiplication_le(input: &[u8]) -> Result<Vec<u8>, AltBn128Error> {
+        if input.len() > ALT_BN128_MULTIPLICATION_INPUT_LEN {
+            return Err(AltBn128Error::InvalidInputData);
+        }
+
+        let mut input = input.to_vec();
+        input.resize(ALT_BN128_MULTIPLICATION_INPUT_LEN, 0);
+
+        let p = g1_from_bytes(&input[..64])?;
+        let fr = BigInteger256::deserialize_uncompressed_unchecked(&input[64..96])
+            .map_err(|_| AltBn128Error::InvalidInputData)?;
+
+        let result_point: G1 = p.mul_bigint(fr).into();
+
+        let mut result_point_data = vec![0u8; ALT_BN128_MULTIPLICATION_OUTPUT_LEN];
+
+        result_point
+            .x
+            .serialize_with_mode(&mut result_point_data[..32], Compress::No)
+            .map_err(|_| AltBn128Error::InvalidInputData)?;
+        result_point
+            .y
+            .serialize_with_mode(&mut result_point_data[32..], Compress::No)
+            .map_err(|_| AltBn128Error::InvalidInputData)?;
+
+        Ok(result_point_data)
+    }
+
     pub fn alt_bn128_pairing(input: &[u8]) -> Result<Vec<u8>, AltBn128Error> {
         if input
             .len()
@@ -251,7 +327,7 @@ mod target_arch {
                     convert_endianness_64(
                         &input[i.saturating_mul(ALT_BN128_PAIRING_ELEMENT_LEN)
                             ..i.saturating_mul(ALT_BN128_PAIRING_ELEMENT_LEN)
-                                .saturating_add(ALT_BN128_POINT_SIZE)],
+                                .saturating_add(ALT_BN128_G1_POINT_SIZE)],
                     )
                     .try_into()
                     .map_err(AltBn128Error::TryIntoVecError)?,
@@ -261,7 +337,7 @@ mod target_arch {
                     convert_endianness_128(
                         &input[i
                             .saturating_mul(ALT_BN128_PAIRING_ELEMENT_LEN)
-                            .saturating_add(ALT_BN128_POINT_SIZE)
+                            .saturating_add(ALT_BN128_G1_POINT_SIZE)
                             ..i.saturating_mul(ALT_BN128_PAIRING_ELEMENT_LEN)
                                 .saturating_add(ALT_BN128_PAIRING_ELEMENT_LEN)],
                     )
@@ -286,14 +362,51 @@ mod target_arch {
         Ok(output)
     }
 
-    fn convert_endianness_64(bytes: &[u8]) -> Vec<u8> {
+    pub fn alt_bn128_pairing_le(input: &[u8]) -> Result<Vec<u8>, AltBn128Error> {
+        if input
+            .len()
+            .checked_rem(consts::ALT_BN128_PAIRING_ELEMENT_LEN)
+            .is_none()
+        {
+            return Err(AltBn128Error::InvalidInputData);
+        }
+
+        let ele_len = input.len().saturating_div(ALT_BN128_PAIRING_ELEMENT_LEN);
+
+        let mut vec_pairs: Vec<(G1, G2)> = Vec::with_capacity(ele_len);
+        for i in 0..ele_len {
+            vec_pairs.push((
+                g1_from_bytes(
+                    &input[i * ALT_BN128_PAIRING_ELEMENT_LEN
+                        ..i * ALT_BN128_PAIRING_ELEMENT_LEN + ALT_BN128_G1_POINT_SIZE],
+                )?,
+                g2_from_bytes(
+                    &input[i * ALT_BN128_PAIRING_ELEMENT_LEN + ALT_BN128_G1_POINT_SIZE
+                        ..i * ALT_BN128_PAIRING_ELEMENT_LEN + ALT_BN128_PAIRING_ELEMENT_LEN],
+                )?,
+            ));
+        }
+
+        let res = <Bn<Config> as Pairing>::multi_pairing(
+            vec_pairs.iter().map(|pair| pair.0),
+            vec_pairs.iter().map(|pair| pair.1),
+        );
+
+        if res.0 == ark_bn254::Fq12::one() {
+            Ok(vec![1])
+        } else {
+            Ok(vec![0])
+        }
+    }
+
+    pub(crate) fn convert_endianness_64(bytes: &[u8]) -> Vec<u8> {
         bytes
             .chunks(32)
             .flat_map(|b| b.iter().copied().rev().collect::<Vec<u8>>())
             .collect::<Vec<u8>>()
     }
 
-    fn convert_endianness_128(bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn convert_endianness_128(bytes: &[u8]) -> Vec<u8> {
         bytes
             .chunks(64)
             .flat_map(|b| b.iter().copied().rev().collect::<Vec<u8>>())
@@ -301,10 +414,10 @@ mod target_arch {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use {
+        crate::target_arch::{convert_endianness_128, convert_endianness_64},
         crate::{prelude::*, PodG1},
         ark_bn254::g1::G1Affine,
         ark_ec::AffineRepr,
@@ -416,11 +529,22 @@ mod tests {
 
         test_cases.iter().for_each(|test| {
             let input = array_bytes::hex2bytes_unchecked(&test.input);
+
+            // test BE implementation (original)
             let result = alt_bn128_addition(&input);
             assert!(result.is_ok());
 
             let expected = array_bytes::hex2bytes_unchecked(&test.expected);
 
+            assert_eq!(result.unwrap(), expected);
+
+            // test implementation LE
+            let input = convert_endianness_64(&input);
+
+            let result = alt_bn128_addition_le(&input);
+            assert!(result.is_ok());
+
+            let expected = convert_endianness_64(&expected);
             assert_eq!(result.unwrap(), expected);
         });
     }
@@ -552,9 +676,19 @@ mod tests {
 
         test_cases.iter().for_each(|test| {
             let input = array_bytes::hex2bytes_unchecked(&test.input);
+
+            // test BE implementation (original)
             let result = alt_bn128_multiplication(&input);
             assert!(result.is_ok());
             let expected = array_bytes::hex2bytes_unchecked(&test.expected);
+            assert_eq!(result.unwrap(), expected);
+
+            // test LE implementation
+            let input = convert_endianness_64(&input);
+            let result = alt_bn128_multiplication_le(&input);
+            assert!(result.is_ok());
+
+            let expected = convert_endianness_64(&expected);
             assert_eq!(result.unwrap(), expected);
         });
     }
@@ -662,10 +796,31 @@ mod tests {
 
         test_cases.iter().for_each(|test| {
             let input = array_bytes::hex2bytes_unchecked(&test.input);
+            // test BE implementation (original)
             let result = alt_bn128_pairing(&input);
             assert!(result.is_ok());
             let expected = array_bytes::hex2bytes_unchecked(&test.expected);
             assert_eq!(result.unwrap(), expected);
+
+            // test LE implementation
+            let mut input_new = Vec::new();
+            let ele_len = input.len().saturating_div(ALT_BN128_PAIRING_ELEMENT_LEN);
+
+            for i in 0..ele_len {
+                input_new.push(convert_endianness_64(
+                    &input[i * ALT_BN128_PAIRING_ELEMENT_LEN
+                        ..i * ALT_BN128_PAIRING_ELEMENT_LEN + ALT_BN128_G1_POINT_SIZE],
+                ));
+                input_new.push(convert_endianness_128(
+                    &input[i * ALT_BN128_PAIRING_ELEMENT_LEN + ALT_BN128_G1_POINT_SIZE
+                        ..i * ALT_BN128_PAIRING_ELEMENT_LEN + ALT_BN128_PAIRING_ELEMENT_LEN],
+                ));
+            }
+            let input: Vec<u8> = input_new.into_iter().flatten().collect();
+
+            let result = alt_bn128_pairing_le(&input);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap()[0], expected[31]);
         });
     }
 }
